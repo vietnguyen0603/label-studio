@@ -1,0 +1,137 @@
+title: Basic Structure Component
+type: community
+group: Structural Components
+image: /static/templates/structural-component-detection.png
+details: |
+  <h1>Basic Structure Component for Custom Annotation Interfaces</h1>
+  <dl>
+    <dt>Industry Applications</dt>
+    <dd>data labeling, annotation interface design, custom workflow creation, user experience enhancement, research data collection</dd>
+    <dt>Associated Models</dt>
+    <dd>N/A (structural component)</dd>
+    <dt>Domain Terminology</dt>
+    <dd>annotation templates, UI components, structural elements, custom interfaces</dd>
+  </dl>
+config: |
+  <View>
+    <Header value="Structural Component Detection - YOLO Training Data Annotation"/>
+
+    <!-- Image display with zoom and controls -->
+    <Image
+      name="image"
+      value="$image"
+      zoom="true"
+      zoomControl="true"
+      rotateControl="true"
+      brightnessControl="true"
+      contrastControl="true"
+      grid="true"
+      gridSize="2"
+      gridColor="#00FF00"
+    />
+
+    <!-- Rectangle labels for bounding boxes -->
+    <RectangleLabels
+      name="label"
+      toName="image"
+      strokeWidth="3"
+      fillOpacity="0.2"
+      canRotate="false"
+      smart="true"
+    >
+      <!-- Primary Vertical Elements -->
+      <Label
+        value="column"
+        background="#FF4444"
+        hotkey="1"
+        hint="Vertical load-bearing element"
+      />
+
+      <Label
+        value="shear_wall"
+        background="#44FF44"
+        hotkey="2"
+        hint="Lateral force resisting wall"
+      />
+
+      <!-- Horizontal Elements -->
+      <Label
+        value="beam"
+        background="#4444FF"
+        hotkey="3"
+        hint="Horizontal load-bearing element"
+      />
+
+      <!-- Foundation Elements -->
+      <Label
+        value="foundation"
+        background="#FFFF44"
+        hotkey="4"
+        hint="Building foundation"
+      />
+
+      <Label
+        value="pile_cap"
+        background="#FF44FF"
+        hotkey="5"
+        hint="Pile cap/foundation cap"
+      />
+
+      <Label
+        value="pile"
+        background="#44FFFF"
+        hotkey="6"
+        hint="Deep foundation pile"
+      />
+
+      <!-- Retaining & Reference Elements -->
+      <Label
+        value="diaphragm_wall"
+        background="#FFA500"
+        hotkey="7"
+        hint="Retaining/diaphragm wall"
+      />
+
+      <Label
+        value="gridline"
+        background="#00FF7F"
+        hotkey="8"
+        hint="Structural grid reference line"
+      />
+    </RectangleLabels>
+
+    <!-- Additional metadata for quality control -->
+    <Choices
+      name="drawing_type"
+      toName="image"
+      choice="single"
+      showInline="true"
+    >
+      <Choice value="plan" hint="Plan view"/>
+      <Choice value="section" hint="Section view"/>
+      <Choice value="elevation" hint="Elevation view"/>
+      <Choice value="detail" hint="Detail drawing"/>
+    </Choices>
+
+    <Choices
+      name="quality"
+      toName="image"
+      choice="single"
+      showInline="true"
+    >
+      <Choice value="excellent" hint="Clear, high quality"/>
+      <Choice value="good" hint="Minor issues"/>
+      <Choice value="fair" hint="Some clarity issues"/>
+      <Choice value="poor" hint="Difficult to annotate"/>
+    </Choices>
+
+    <!-- Notes field for special cases -->
+    <TextArea
+      name="notes"
+      toName="image"
+      placeholder="Add any notes about this annotation (optional)"
+      rows="2"
+      maxSubmissions="1"
+    />
+
+  </View>
