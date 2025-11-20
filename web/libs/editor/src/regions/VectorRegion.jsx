@@ -54,13 +54,18 @@ const Model = types
 
     // Internal flag to detect if we converted data back from relative points
     converted: false,
+
+    // There are two modes: transform and edit
+    // transform -- user can transform the shape as a whole (rotate, translate, resize)
+    // edit -- user works with individual points
+    transformMode: false,
   })
   .volatile(() => ({
     mouseOverStartPoint: false,
     selectedPoint: null,
     hideable: true,
     _supportsTransform: true,
-    useTransformer: true,
+    useTransformer: false,
     preferTransformer: false,
     supportsRotate: true,
     supportsScale: true,
@@ -159,7 +164,7 @@ const Model = types
       }
     },
     get disabled() {
-      const tool = self.parent.getToolsManager().findSelectedTool();
+      const tool = self.parent?.getToolsManager().findSelectedTool();
       return (tool?.disabled ?? false) || self.isReadOnly() || (!self.selected && !self.isDrawing);
     },
   }))
@@ -187,28 +192,13 @@ const Model = types
         self.mouseOverStartPoint = value;
       },
 
-      addPoint() {
-        // KonvaVector managing vector points internally.
-        // This method is just a fallback for compatibility
-      },
-
       setDrawing(drawing) {
         self.isDrawing = drawing;
-      },
-
-      checkSizes() {
-        // This method is called after creation to ensure proper sizing
-        // For vector regions, we don't need to do anything special here
       },
 
       closePoly() {
         if (!self.closable) return;
         self.vectorRef.close();
-      },
-
-      notifyDrawingFinished() {
-        // This method is called when drawing is finished
-        // For vector regions, we don't need to do anything special here
       },
 
       onSelection(type) {
@@ -243,6 +233,7 @@ const Model = types
 
       _selectArea(additiveMode = false) {
         const annotation = self.annotation;
+        self.setTransformMode(false);
         if (!annotation) return;
 
         if (additiveMode) {
@@ -342,15 +333,6 @@ const Model = types
         });
       },
 
-      isHovered() {
-        const stage = self.groupRef.getStage();
-        const pointer = stage.getPointerPosition();
-
-        // Convert to pixel coords in the canvas backing the image
-        const { x, y } = self.parent?.layerZoomScalePosition ?? { x: 0, y: 0 };
-        return self.vectorRef.isPointOverShape(pointer.x, pointer.y);
-      },
-
       // Checks is the region is being transformed or at least in
       // transformable state (has at least 2 points selected)
       isTransforming() {
@@ -422,7 +404,7 @@ const Model = types
           });
         }
 
-        if (!self.annotation.sentUserGenerate && self.coordstype === "perc") {
+        if (self.annotation && !self.annotation.sentUserGenerate && self.coordstype === "perc") {
           self.vertices.forEach((p) => {
             const x = (sw * p.x) / RELATIVE_STAGE_WIDTH;
             const y = (sh * p.y) / RELATIVE_STAGE_HEIGHT;
@@ -443,14 +425,45 @@ const Model = types
         self.closed = isClosed;
       },
 
-      // Method to handle selection changes from the Selection tool
-      onSelectionChange() {
-        // This method can be called when the Selection tool changes selection state
-        // We can add any custom logic here if needed
-      },
-
       setKonvaVectorRef(ref) {
         self.vectorRef = ref;
+      },
+
+      /**
+       * Override selectRegion to reset transform mode when selecting from sidebar
+       * This ensures transform mode is reset whether selecting by clicking on the shape
+       * or selecting from the sidebar/outliner
+       */
+      selectRegion() {
+        // Reset transform mode when region is selected (from sidebar or elsewhere)
+        self.setTransformMode(false);
+        // Call parent selectRegion to handle scrolling
+        self.scrollToRegion();
+      },
+
+      addPoint(x, y) {
+        const image = self.parent.currentImageEntity;
+        const width = image.naturalWidth;
+        const height = image.naturalHeight;
+
+        const realX = (x / 100) * width;
+        const realY = (y / 100) * height;
+
+        if (!self.vectorRef) {
+          return;
+        }
+        if (self.closed) {
+          return;
+        }
+
+        // Use KonvaVector's programmatic point creation methods
+        // Start a point, then immediately commit it to create a regular point
+        const startResult = self.vectorRef.startPoint(realX, realY);
+        if (startResult) {
+          const commitResult = self.vectorRef.commitPoint(realX, realY);
+          return commitResult;
+        }
+        return null;
       },
 
       // Uses KonvaVector startPoint to start drawing
@@ -484,7 +497,76 @@ const Model = types
           const annotation = self.parent?.annotation;
           annotation?.toggleRegionSelection(self);
         }
-        tool?.complete();
+        tool?.complete?.();
+      },
+      toggleTransformMode() {
+        self.setTransformMode(!self.transformMode);
+      },
+      setTransformMode(transformMode) {
+        self.transformMode = transformMode;
+      },
+
+      /**
+       * Apply transformations from ImageTransformer to the vector points
+       * Called by ImageTransformer when multi-region transformations complete
+       * @param {Object} transform - Transform object with dx, dy, scaleX, scaleY, rotation
+       * @param {Object} transformerCenter - Center point used by the ImageTransformer for scaling/rotation
+       */
+      applyTransform(transform, transformerCenter) {
+        if (!self.vectorRef) {
+          return;
+        }
+
+        // Delegate to KonvaVector's commitMultiRegionTransform method
+        // This method reads the proxy node coordinates and applies them directly
+        if (typeof self.vectorRef.commitMultiRegionTransform === "function") {
+          self.vectorRef.commitMultiRegionTransform();
+        } else {
+          console.error("📊 commitMultiRegionTransform method not available");
+        }
+      },
+
+      /**
+       * Override deleteRegion to handle selected points deletion
+       * If points are selected (but not all), delete only those points
+       * If all points are selected or none, delete the entire region
+       * If region is part of multi-selection, always delete the entire region
+       */
+      deleteRegion() {
+        // Check if this region is part of multi-selection
+        // If so, always delete the entire region (don't check for selected points)
+        const isMultiRegionSelected = self.object?.selectedRegions?.length > 1;
+
+        if (!isMultiRegionSelected) {
+          // Only check for selected points if NOT part of multi-selection
+          // Check if we have selected points and if vectorRef is available
+          if (self.vectorRef && typeof self.vectorRef.getSelectedPointIds === "function") {
+            const selectedPointIds = self.vectorRef.getSelectedPointIds();
+            const totalPoints = self.vertices.length;
+
+            // If we have selected points AND not all points are selected, delete only those points
+            if (selectedPointIds.length > 0 && selectedPointIds.length < totalPoints) {
+              // Delete only the selected points
+              if (typeof self.vectorRef.deletePointsByIds === "function") {
+                self.vectorRef.deletePointsByIds(selectedPointIds);
+                return; // Don't delete the entire region
+              }
+            }
+            // Otherwise, fall through to delete the entire region
+          }
+        }
+
+        // Delete the entire region (original behavior)
+        // Call parent deleteRegion from KonvaRegionMixin
+        const selectedTool = self.parent?.getToolsManager().findSelectedTool();
+        selectedTool?.enable?.();
+        // Call the parent deleteRegion which eventually calls annotation.deleteRegion(self)
+        // We need to call it through the mixin chain
+        if (self.annotation.isReadOnly()) return;
+        if (self.isReadOnly()) return;
+        if (self.selected) self.annotation.unselectAll(true);
+        if (self.destroyRegion) self.destroyRegion();
+        self.annotation.deleteRegion(self);
       },
     };
   });
@@ -510,22 +592,117 @@ const HtxVectorView = observer(({ item, suggestion }) => {
   const stageWidth = image?.naturalWidth ?? 0;
   const stageHeight = image?.naturalHeight ?? 0;
   const { x: offsetX, y: offsetY } = item.parent?.layerZoomScalePosition ?? { x: 0, y: 0 };
+  const disabled = item.disabled || suggestion || store.annotationStore.selected.isLinkingMode;
 
   // Wait for stage to be properly initialized
   if (!item.parent?.stageWidth || !item.parent?.stageHeight) {
     return null;
   }
 
+  // Check if move tool is selected (disable ghost line when move tool is active)
+  const selectedTool = item.parent?.getToolsManager()?.findSelectedTool();
+  const disableGhostLine = selectedTool?.fullName === "MoveTool";
+
   return (
     <RegionWrapper item={item}>
-      <Group ref={(ref) => item.segGroupRef(ref)}>
+      <Group ref={(ref) => item.segGroupRef(ref)} name={item.id}>
         <KonvaVector
           ref={(kv) => item.setKonvaVectorRef(kv)}
           initialPoints={Array.from(item.vertices)}
+          isMultiRegionSelected={item.object?.selectedRegions?.length > 1}
+          disableGhostLine={disableGhostLine}
           onFinish={(e) => {
+            console.log("on finish");
+            if (disabled) return;
             e.evt.stopPropagation();
             e.evt.preventDefault();
             item.handleFinish();
+          }}
+          onTransformStart={() => {
+            item.parent.annotation.history.freeze();
+          }}
+          onTransformEnd={(e) => {
+            item.parent.annotation.history.unfreeze();
+
+            // Handle case where event might be undefined (e.g., from onTransformationEnd)
+            if (!e || !e.target || !e.currentTarget) return;
+
+            if (e.target !== e.currentTarget) return;
+
+            const t = e.target;
+            const dx = t.getAttr("x", 0);
+            const dy = t.getAttr("y", 0);
+            const scaleX = t.getAttr("scaleX", 1);
+            const scaleY = t.getAttr("scaleY", 1);
+            const rotation = t.getAttr("rotation", 0);
+
+            // Reset transform attributes
+            t.setAttr("x", 0);
+            t.setAttr("y", 0);
+            t.setAttr("scaleX", 1);
+            t.setAttr("scaleY", 1);
+            t.setAttr("rotation", 0);
+
+            // Apply transformation to all points using KonvaVector methods
+            if (item.vectorRef) {
+              // Apply the transformation exactly as Konva did:
+              // 1. Scale around origin (0,0)
+              // 2. Rotate around origin (0,0)
+              // 3. Translate by (dx, dy)
+              // Don't pass centerX/centerY - transform around origin
+              const radians = rotation * (Math.PI / 180);
+              const cos = Math.cos(radians);
+              const sin = Math.sin(radians);
+
+              const imageWidth = image?.naturalWidth ?? 0;
+              const imageHeight = image?.naturalHeight ?? 0;
+
+              const transformedVertices = item.vertices.map((point) => {
+                // Step 1: Scale
+                const x = point.x * scaleX;
+                const y = point.y * scaleY;
+
+                // Step 2: Rotate
+                const rx = x * cos - y * sin;
+                const ry = x * sin + y * cos;
+
+                // Step 3: Translate and clamp to image bounds
+                const result = {
+                  ...point,
+                  x: Math.max(0, Math.min(imageWidth, rx + dx)),
+                  y: Math.max(0, Math.min(imageHeight, ry + dy)),
+                };
+
+                // Transform control points if bezier
+                if (point.isBezier) {
+                  if (point.controlPoint1) {
+                    const cp1x = point.controlPoint1.x * scaleX;
+                    const cp1y = point.controlPoint1.y * scaleY;
+                    const cp1rx = cp1x * cos - cp1y * sin;
+                    const cp1ry = cp1x * sin + cp1y * cos;
+                    result.controlPoint1 = {
+                      x: Math.max(0, Math.min(imageWidth, cp1rx + dx)),
+                      y: Math.max(0, Math.min(imageHeight, cp1ry + dy)),
+                    };
+                  }
+                  if (point.controlPoint2) {
+                    const cp2x = point.controlPoint2.x * scaleX;
+                    const cp2y = point.controlPoint2.y * scaleY;
+                    const cp2rx = cp2x * cos - cp2y * sin;
+                    const cp2ry = cp2x * sin + cp2y * cos;
+                    result.controlPoint2 = {
+                      x: Math.max(0, Math.min(imageWidth, cp2rx + dx)),
+                      y: Math.max(0, Math.min(imageHeight, cp2ry + dy)),
+                    };
+                  }
+                }
+
+                return result;
+              });
+
+              // Update the points
+              item.updatePointsFromKonvaVector(transformedVertices);
+            }
           }}
           onPointsChange={(points) => {
             item.updatePointsFromKonvaVector(points);
@@ -533,11 +710,27 @@ const HtxVectorView = observer(({ item, suggestion }) => {
           onPathClosedChange={(isClosed) => {
             item.onPathClosedChange(isClosed);
           }}
+          onGhostPointClick={(ghostPoint) => {
+            // Only handle if we're drawing
+            if (!item.isDrawing) {
+              return;
+            }
+
+            if (item.vectorRef) {
+              // Start and immediately commit to insert the point at ghost location
+              const startResult = item.vectorRef.startPoint(ghostPoint.x, ghostPoint.y);
+              if (startResult) {
+                item.vectorRef.commitPoint(ghostPoint.x, ghostPoint.y);
+              }
+            }
+          }}
           onClick={(e) => {
             if (e.evt.defaultPrevented) {
               return;
             }
+
             // Handle region selection
+            if (item.isReadOnly()) return;
             if (item.parent.getSkipInteractions()) return;
             if (item.isDrawing) return;
             if (e.evt.altKey || e.evt.ctrlKey || e.evt.shiftKey || e.evt.metaKey) return;
@@ -565,6 +758,12 @@ const HtxVectorView = observer(({ item, suggestion }) => {
             }
             item.updateCursor();
           }}
+          onDblClick={(e) => {
+            e.evt.stopImmediatePropagation();
+            e.evt.stopPropagation();
+            e.evt.preventDefault();
+            item.toggleTransformMode();
+          }}
           closed={item.closed}
           width={stageWidth}
           height={stageHeight}
@@ -572,6 +771,7 @@ const HtxVectorView = observer(({ item, suggestion }) => {
           scaleY={item.parent.stageZoom}
           x={0}
           y={0}
+          transformMode={item.selected && item.transformMode}
           transform={{ zoom: item.parent.stageZoom, offsetX, offsetY }}
           fitScale={item.parent.zoomScale}
           allowClose={item.control?.closable ?? false}
@@ -580,18 +780,18 @@ const HtxVectorView = observer(({ item, suggestion }) => {
           maxPoints={item.maxPoints}
           skeletonEnabled={item.control?.skeleton ?? false}
           stroke={item.selected ? "#ff0000" : regionStyles.strokeColor}
-          fill={item.selected ? "rgba(255, 0, 0, 0.3)" : regionStyles.fillColor}
+          fill={regionStyles.fillColor}
           strokeWidth={regionStyles.strokeWidth}
           opacity={Number.parseFloat(item.control?.opacity || "1")}
           pixelSnapping={item.control?.snap === "pixel"}
-          constrainToBounds={item.control?.constrainToBounds ?? true}
-          disabled={item.disabled || suggestion || store.annotationStore.selected.isLinkingMode}
+          disabled={disabled}
           // Point styling - customize point appearance based on control settings
           pointRadius={item.pointRadiusFromSize}
           pointFill={item.selected ? "#ffffff" : "#f8fafc"}
           pointStroke={item.selected ? "#ff0000" : regionStyles.strokeColor}
           pointStrokeSelected="#ff6b35"
           pointStrokeWidth={item.selected ? 2 : 1}
+          disableInternalPointAddition={true}
         />
 
         {item.vertices.length > 0 && (

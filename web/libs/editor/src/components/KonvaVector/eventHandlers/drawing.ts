@@ -1,6 +1,7 @@
 import type { KonvaEventObject } from "konva/lib/Node";
 import type { EventHandlerProps } from "./types";
 import { PointType } from "../types";
+import { HIT_RADIUS } from "../constants";
 import { getDistance, isPointInCanvasBounds, snapToPixel, stageToImageCoordinates } from "./utils";
 
 export interface AddPointOptions {
@@ -156,7 +157,7 @@ export function handleDrawingModeClick(e: KonvaEventObject<MouseEvent>, props: E
   const imagePos = stageToImageCoordinates(pos, props.transform, props.fitScale, props.x, props.y);
 
   // Check if we're within canvas bounds (only if bounds checking is enabled)
-  if (props.constrainToBounds && !isPointInCanvasBounds(imagePos, props.width, props.height)) {
+  if (!isPointInCanvasBounds(imagePos, props.width, props.height)) {
     return false;
   }
 
@@ -177,7 +178,6 @@ export function handleDrawingModeClick(e: KonvaEventObject<MouseEvent>, props: E
   }
 
   // Only add new points if path is not closed and we haven't reached max points
-
   if (!props.isPathClosed && props.canAddMorePoints?.()) {
     // In skeleton mode, explicitly pass the activePointId as prevPointId
     // to ensure the new point connects to the selected point
@@ -257,7 +257,7 @@ export function handleShiftClickPointConversion(e: KonvaEventObject<MouseEvent>,
   for (let i = 0; i < props.initialPoints.length; i++) {
     const point = props.initialPoints[i];
     const distance = getDistance(imagePos, point);
-    const hitRadius = 10 / (props.transform.zoom * props.fitScale);
+    const hitRadius = HIT_RADIUS.SELECTION / (props.transform.zoom * props.fitScale);
 
     if (distance <= hitRadius && distance < closestDistance) {
       closestDistance = distance;
